@@ -1,0 +1,2 @@
+aiohttp>=3.8.0
+paramiko>=2.11.0
