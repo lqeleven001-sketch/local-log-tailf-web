@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import signal
 from aiohttp import web
 from aiohttp import web_ws
 import paramiko
@@ -129,8 +130,9 @@ class LogTailServer:
         
         server = request.query.get('server', '')
         file_path = request.query.get('file', '')
+        lines = request.query.get('lines', '100')  # 默认显示 100 行
         
-        print(f"WebSocket 请求参数: server={server}, file={file_path}")
+        print(f"WebSocket 请求参数: server={server}, file={file_path}, lines={lines}")
         
         if not server or not file_path:
             print("WebSocket 请求缺少参数")
@@ -152,6 +154,18 @@ class LogTailServer:
                 await ws.close()
                 return ws
             
+            # 先获取历史日志（指定行数）
+            print(f"执行命令: tail -n {lines} '{file_path}'")
+            stdin, stdout, stderr = client.exec_command(f'tail -n {lines} "{file_path}"')
+            history_output = stdout.read().decode('utf-8')
+            if history_output:
+                print(f"发送历史日志: {len(history_output.splitlines())} 行")
+                await ws.send_json({
+                    'success': True,
+                    'content': history_output
+                })
+            
+            # 然后开始实时监控
             print(f"执行命令: tail -f '{file_path}'")
             stdin, stdout, stderr = client.exec_command(f'tail -f "{file_path}"')
             
@@ -181,6 +195,51 @@ class LogTailServer:
             await ws.close()
         
         return ws
+    
+    async def download_file(self, request):
+        """下载文件"""
+        server = request.query.get('server', '')
+        file_path = request.query.get('file', '')
+        
+        print(f"下载文件请求: server={server}, file={file_path}")
+        
+        if not server or not file_path:
+            return web.json_response({
+                'success': False,
+                'message': '缺少参数'
+            })
+        
+        try:
+            client = self.get_ssh_client(server)
+            if not client:
+                return web.json_response({
+                    'success': False,
+                    'message': '无法连接到服务器'
+                })
+            
+            # 使用 SFTP 下载文件
+            sftp = client.open_sftp()
+            file_content = sftp.file(file_path, 'rb').read()
+            sftp.close()
+            
+            # 获取文件名
+            filename = file_path.split('/')[-1]
+            
+            # 返回文件内容
+            return web.Response(
+                body=file_content,
+                content_type='application/octet-stream',
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"'
+                }
+            )
+            
+        except Exception as e:
+            print(f"下载文件错误: {e}")
+            return web.json_response({
+                'success': False,
+                'message': str(e)
+            })
     
     async def stop(self, request):
         """停止监控"""
@@ -230,6 +289,7 @@ class LogTailServer:
             web.get('/', handle_root),
             web.get('/api/servers', self.get_servers),
             web.get('/api/files/list', self.list_files),
+            web.get('/api/files/download', self.download_file),
             web.get('/api/tail', self.tail_file),
             web.post('/api/stop', self.stop),
             web.static('/', '.')
@@ -243,8 +303,38 @@ def main():
     
     print("LogTail 服务器启动中...")
     print("访问地址：http://localhost:18081")
+    print("按 Ctrl+C 停止服务器")
     
-    web.run_app(app, host='0.0.0.0', port=18081)
+    # 创建事件循环
+    loop = asyncio.get_event_loop()
+    
+    # 定义信号处理函数
+    def signal_handler(sig, frame):
+        print("\n正在停止服务器...")
+        # 取消所有任务
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+        # 关闭事件循环
+        loop.stop()
+    
+    # 注册信号处理
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # 运行服务器
+    try:
+        loop.run_until_complete(web._run_app(app, host='0.0.0.0', port=18081))
+    except asyncio.CancelledError:
+        print("服务器已停止")
+    finally:
+        # 关闭所有 SSH 连接
+        for client in server.ssh_clients.values():
+            try:
+                client.close()
+            except:
+                pass
+        # 关闭事件循环
+        loop.close()
 
 if __name__ == '__main__':
     main()

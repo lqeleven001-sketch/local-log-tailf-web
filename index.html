@@ -29,6 +29,26 @@
             gap: 15px;
         }
 
+        .toolbar {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 10px 15px;
+            background: #2d2d30;
+            border-bottom: 1px solid #3c3c3c;
+        }
+
+        .toolbar-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .toolbar-group label {
+            font-size: 13px;
+            color: #cccccc;
+        }
+
         .header h1 {
             font-size: 18px;
             color: #569cd6;
@@ -257,6 +277,14 @@
                 <div class="current-file" id="currentFile">
                     未选择文件
                 </div>
+                <div class="toolbar-group">
+                    <label for="lineCountSelect">显示行数：</label>
+                    <select id="lineCountSelect" class="server-select">
+                        <option value="100">100</option>
+                        <option value="500">500</option>
+                        <option value="1000">1000</option>
+                    </select>
+                </div>
                 <button class="btn" id="btnStart" disabled>
                     ▶ 开始监控
                 </button>
@@ -265,6 +293,9 @@
                 </button>
                 <button class="btn" id="btnClear">
                     🗑 清空显示
+                </button>
+                <button class="btn" id="btnDownload" disabled>
+                    📥 下载文件
                 </button>
             </div>
             <div class="log-container" id="logContainer">
@@ -291,6 +322,7 @@
                 this.isMonitoring = false;
                 this.ws = null;
                 this.lineCount = 0;
+                this.servers = []; // 初始化服务器列表
                 
                 this.initElements();
                 this.bindEvents();
@@ -306,6 +338,7 @@
                     console.log('服务器列表响应数据:', data);
                     
                     if (data.success) {
+                        this.servers = data.servers; // 保存服务器列表
                         this.serverSelect.innerHTML = '<option value="">选择服务器...</option>';
                         data.servers.forEach(server => {
                             const option = document.createElement('option');
@@ -328,6 +361,8 @@
                 this.btnStart = document.getElementById('btnStart');
                 this.btnStop = document.getElementById('btnStop');
                 this.btnClear = document.getElementById('btnClear');
+                this.btnDownload = document.getElementById('btnDownload');
+                this.lineCountSelect = document.getElementById('lineCountSelect');
                 this.statusLeft = document.getElementById('statusLeft');
                 this.statusRight = document.getElementById('statusRight');
             }
@@ -343,6 +378,7 @@
                 this.btnStart.addEventListener('click', () => this.startMonitoring());
                 this.btnStop.addEventListener('click', () => this.stopMonitoring());
                 this.btnClear.addEventListener('click', () => this.clearLog());
+                this.btnDownload.addEventListener('click', () => this.downloadFile());
             }
 
             async loadDirectory(path) {
@@ -392,15 +428,25 @@
                 const container = document.createElement('div');
                 container.className = 'directory-tree';
 
-                // 添加返回上一级目录的选项
-                if (parentPath !== '/') {
+                // 获取当前服务器的 base_path
+                let basePath = '/data/logs'; // 默认值
+                const serverInfo = this.servers.find(s => s.host === this.currentServer);
+                if (serverInfo && serverInfo.base_path) {
+                    basePath = serverInfo.base_path;
+                }
+
+                // 添加返回上一级目录的选项，但不允许超出 base_path
+                if (parentPath !== '/' && parentPath !== basePath) {
                     const parentItem = document.createElement('div');
                     parentItem.className = 'tree-item directory';
                     parentItem.innerHTML = '<span>📁 ..</span>';
                     parentItem.addEventListener('click', (e) => {
                         e.stopPropagation();
                         const parentDir = parentPath.substring(0, parentPath.lastIndexOf('/')) || '/';
-                        this.loadDirectory(parentDir);
+                        // 确保不会超出 base_path
+                        if (parentDir.startsWith(basePath)) {
+                            this.loadDirectory(parentDir);
+                        }
                     });
                     container.appendChild(parentItem);
                 }
@@ -439,7 +485,28 @@
                 this.currentFile = `${path}/${filename}`;
                 this.currentFileElement.innerHTML = `当前文件：<span>${this.currentFile}</span>`;
                 this.btnStart.disabled = false;
+                this.btnDownload.disabled = false;
+                this.btnStop.disabled = true;
                 this.statusLeft.textContent = `已选择：${this.currentFile}`;
+                
+                // 切换文件时自动清空日志内容
+                this.clearLog();
+            }
+
+            downloadFile() {
+                if (!this.currentFile || !this.currentServer) return;
+                
+                // 构建下载 URL
+                const downloadUrl = `/api/files/download?server=${this.currentServer}&file=${encodeURIComponent(this.currentFile)}`;
+                
+                // 创建隐藏的下载链接
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = this.currentFile.split('/').pop();
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
             }
 
             startMonitoring() {
@@ -448,10 +515,14 @@
                 this.isMonitoring = true;
                 this.btnStart.disabled = true;
                 this.btnStop.disabled = false;
+                this.btnDownload.disabled = true; // 监控时禁用下载按钮
                 this.statusLeft.innerHTML = '<span class="loading"></span> 监控中...';
 
+                // 获取选择的日志行数
+                const lineCount = this.lineCountSelect.value;
+                
                 // 建立 WebSocket 连接
-                const wsUrl = `ws://${window.location.host}/api/tail?server=${this.currentServer}&file=${encodeURIComponent(this.currentFile)}`;
+                const wsUrl = `ws://${window.location.host}/api/tail?server=${this.currentServer}&file=${encodeURIComponent(this.currentFile)}&lines=${lineCount}`;
                 this.ws = new WebSocket(wsUrl);
 
                 this.ws.onopen = () => {
@@ -490,6 +561,7 @@
                 this.isMonitoring = false;
                 this.btnStart.disabled = false;
                 this.btnStop.disabled = true;
+                this.btnDownload.disabled = false; // 停止监控后启用下载按钮
                 this.statusLeft.textContent = '已停止监控';
                 
                 if (this.ws) {
