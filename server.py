@@ -147,9 +147,7 @@ class LogTailServer:
         stdin = None
         stdout = None
         stderr = None
-        channel = None
         client = None
-        tail_pid = None
 
         try:
             client = self.get_ssh_client(server)
@@ -177,16 +175,10 @@ class LogTailServer:
                     'content': history_output
                 })
 
-            # 然后开始实时监控 - 使用 transport channel 以便获取 PID
+            # 然后开始实时监控
             print(f"执行命令：tail -f '{file_path}'")
-            transport = client.get_transport()
-            channel = transport.open_session()
-            channel.exec_command(f'tail -f "{file_path}"')
-            # 获取远程进程 PID
-            tail_pid = channel.get_pid()
-            print(f"tail 进程 PID: {tail_pid}")
-            stdout = channel.makefile("rb", -1)
-            stderr = channel.makefile_stderr("rb", -1)
+            # 使用 exec_command 执行，channel 关闭时 bash 进程退出，tail 也会退出
+            stdin, stdout, stderr = client.exec_command(f'tail -f "{file_path}"')
 
             async def read_stdout():
                 try:
@@ -213,20 +205,11 @@ class LogTailServer:
                 'message': str(e)
             })
         finally:
-            # 清理资源：先 kill 掉 tail 进程，再关闭 channel
-            if tail_pid and client:
-                try:
-                    print(f"正在终止 tail 进程 PID: {tail_pid}")
-                    _stdin, _stdout, _stderr = client.exec_command(f'kill {tail_pid} 2>/dev/null || true')
-                    _stdin.close()
-                    _stdout.close()
-                    _stderr.close()
-                except Exception as e:
-                    print(f"终止进程失败：{e}")
-
-            # 关闭 channel
+            # 关闭 stream，channel 关闭时 bash 进程退出，tail 也会退出
             try:
-                if channel: channel.close()
+                if stdin: stdin.close()
+                if stdout: stdout.close()
+                if stderr: stderr.close()
             except:
                 pass
 
