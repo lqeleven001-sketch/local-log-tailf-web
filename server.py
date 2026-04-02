@@ -149,6 +149,7 @@ class LogTailServer:
         stderr = None
         channel = None
         client = None
+        tail_cmd = None
 
         try:
             client = self.get_ssh_client(server)
@@ -176,13 +177,9 @@ class LogTailServer:
                     'content': history_output
                 })
 
-            # 然后开始实时监控 - 使用 transport channel 以便可以发送信号
+            # 然后开始实时监控 - 使用 bash 包装，确保 channel 关闭时 tail 进程终止
             print(f"执行命令：tail -f '{file_path}'")
-            transport = client.get_transport()
-            channel = transport.open_session()
-            channel.exec_command(f'tail -f "{file_path}"')
-            stdout = channel.makefile("rb", -1)
-            stderr = channel.makefile_stderr("rb", -1)
+            stdin, stdout, stderr = client.exec_command(f'bash -c "tail -f \\"{file_path}\\""')
 
             async def read_stdout():
                 try:
@@ -209,25 +206,13 @@ class LogTailServer:
                 'message': str(e)
             })
         finally:
-            # 清理资源：先发送信号终止 tail 进程，再关闭 channel
-            if channel:
-                try:
-                    channel.send_signal(signal.SIGTERM)
-                    print("已发送 SIGTERM 信号终止 tail 进程")
-                except Exception as e:
-                    print(f"发送信号失败：{e}")
-                try:
-                    channel.close()
-                except Exception as e:
-                    print(f"关闭 channel 失败：{e}")
-            else:
-                # 兼容模式：直接关闭 stream
-                try:
-                    if stdin: stdin.close()
-                    if stdout: stdout.close()
-                    if stderr: stderr.close()
-                except:
-                    pass
+            # 清理资源：关闭 stream
+            try:
+                if stdin: stdin.close()
+                if stdout: stdout.close()
+                if stderr: stderr.close()
+            except:
+                pass
 
             print("WebSocket 连接关闭，资源已清理")
             await ws.close()
