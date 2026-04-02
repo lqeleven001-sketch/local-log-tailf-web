@@ -144,10 +144,11 @@ class LogTailServer:
             await ws.close()
             return ws
 
-        channel = None
-        tail_pid = None
+        stdin = None
+        stdout = None
+        stderr = None
         client = None
-        
+
         try:
             client = self.get_ssh_client(server)
             if not client:
@@ -161,11 +162,11 @@ class LogTailServer:
 
             # 先获取历史日志（指定行数）
             print(f"执行命令：tail -n {lines} '{file_path}'")
-            stdin, stdout, stderr = client.exec_command(f'tail -n {lines} "{file_path}"')
-            history_output = stdout.read().decode('utf-8')
-            # 关闭 channel 释放资源
-            stdin.close()
-            stdout.channel.close()
+            _stdin, _stdout, _stderr = client.exec_command(f'tail -n {lines} "{file_path}"')
+            history_output = _stdout.read().decode('utf-8')
+            _stdin.close()
+            _stdout.close()
+            _stderr.close()
             
             if history_output:
                 print(f"发送历史日志：{len(history_output.splitlines())} 行")
@@ -176,15 +177,11 @@ class LogTailServer:
 
             # 然后开始实时监控 - 使用新的 channel
             print(f"执行命令：tail -f '{file_path}'")
-            transport = client.get_transport()
-            channel = transport.open_session()
-            channel.get_pty()  # 分配 PTY 以便可以发送信号
-            channel.exec_command(f'tail -f "{file_path}"')
-            stdout = channel.makefile("rb", -1)
+            stdin, stdout, stderr = client.exec_command(f'tail -f "{file_path}"')
 
             async def read_stdout():
                 try:
-                    while not channel.exit_status_ready():
+                    while True:
                         line = await asyncio.get_event_loop().run_in_executor(
                             None, stdout.readline
                         )
@@ -207,26 +204,14 @@ class LogTailServer:
                 'message': str(e)
             })
         finally:
-            # 清理资源：先尝试杀死 tail 进程
-            if channel:
-                try:
-                    # 发送 SIGTERM 信号给 tail 进程
-                    channel.send_signal(signal.SIGTERM)
-                except Exception as e:
-                    print(f"发送信号失败：{e}")
-                
-                try:
-                    channel.close()
-                except Exception as e:
-                    print(f"关闭 channel 失败：{e}")
-            
-            # 如果知道 PID，直接 kill
-            if tail_pid and client:
-                try:
-                    client.exec_command(f'kill -9 {tail_pid} 2>/dev/null || true')
-                except:
-                    pass
-            
+            # 清理资源：关闭 channel
+            try:
+                stdin.close()
+                stdout.close()
+                stderr.close()
+            except:
+                pass
+
             print("WebSocket 连接关闭，资源已清理")
             await ws.close()
 
