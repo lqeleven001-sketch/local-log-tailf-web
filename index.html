@@ -482,13 +482,18 @@
             }
 
             selectFile(path, filename) {
+                // 切换文件时，如果之前正在监控，先停止之前的监控
+                if (this.isMonitoring) {
+                    this.stopMonitoring();
+                }
+
                 this.currentFile = `${path}/${filename}`;
                 this.currentFileElement.innerHTML = `当前文件：<span>${this.currentFile}</span>`;
                 this.btnStart.disabled = false;
                 this.btnDownload.disabled = false;
                 this.btnStop.disabled = true;
                 this.statusLeft.textContent = `已选择：${this.currentFile}`;
-                
+
                 // 切换文件时自动清空日志内容
                 this.clearLog();
             }
